@@ -1153,6 +1153,10 @@ def test_sock_state_cb_and_timer_cb() -> None:
         ):
             resolver = aiodns.DNSResolver(loop=loop, timeout=0)
             assert resolver._event_thread is False
+            channel = unittest.mock.Mock()
+            channel.timeout.return_value = 1
+            resolver._channel = channel
+            resolver._pending_queries.add(loop.create_future())
 
             # Test writable only (readable=False, writable=True)
             resolver._sock_state_cb(fd1, False, True)
@@ -1177,8 +1181,10 @@ def test_sock_state_cb_and_timer_cb() -> None:
             resolver._sock_state_cb(fd2, False, False)
             assert fd2 not in resolver._read_fds
             assert fd2 not in resolver._write_fds
+            resolver._pending_queries.clear()
+            resolver._schedule_timer()
 
-            # Timer should be cancelled when no fds left
+            # The native deadline timer is cancelled after query completion.
             assert resolver._timer is None
 
             # Test _timer_cb without active fds - should clear timer
@@ -1451,29 +1457,36 @@ def test_read_only_transition_removes_writer_callback_on_real_loop() -> None:
         loop.close()
 
 
-def test_socket_state_timer_lives_until_all_descriptors_close() -> None:
+def test_socket_state_timer_lives_until_query_completes() -> None:
     loop = unittest.mock.Mock()
     timer = unittest.mock.Mock()
-    loop.call_later.return_value = timer
+    loop.time.return_value = 10
+    loop.call_at.return_value = timer
+    timer.when.return_value = 11
     resolver = aiodns.DNSResolver.__new__(aiodns.DNSResolver)
     resolver.loop = loop
     resolver._channel = unittest.mock.Mock()
-    resolver._timeout = 1
+    resolver._channel.timeout.return_value = 1
+    resolver._event_thread = False
     resolver._read_fds = set()
     resolver._write_fds = set()
     resolver._timer = None
-    resolver._closed = True
+    query = loop.create_future()
+    resolver._pending_queries = {query}
+    resolver._closed = False
 
     resolver._sock_state_cb(17, True, False)
     first_timer = resolver._timer
     resolver._sock_state_cb(18, False, True)
     assert resolver._timer is first_timer
-    assert loop.call_later.call_count == 1
+    assert loop.call_at.call_count == 1
 
     resolver._sock_state_cb(17, False, False)
     timer.cancel.assert_not_called()
     assert resolver._timer is first_timer
     resolver._sock_state_cb(18, False, False)
+    assert timer.cancel.call_count == 0
+    resolver._on_query_complete(query)
     timer.cancel.assert_called_once_with()
     assert resolver._timer is None
 
