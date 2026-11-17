@@ -145,10 +145,10 @@ async def test_stayopen_last_query_completion_clears_timer(
         'gethostbyaddr',
     ],
 )
-async def test_cancelled_future_keeps_native_timeout_processing(
+async def test_cancelled_future_processes_native_terminal_state(
     monkeypatch: pytest.MonkeyPatch, method: str
 ) -> None:
-    """All query APIs process native completion after Future cancellation."""
+    """Stop cancellable work and keep legacy work processing to completion."""
     loop = asyncio.get_running_loop()
     server, _ = await loop.create_datagram_endpoint(
         lambda: _LocalDNSServer(drop_all=True),
@@ -193,7 +193,11 @@ async def test_cancelled_future_keeps_native_timeout_processing(
         )()
         assert future.cancel()
         await asyncio.sleep(0)
-        assert resolver._timer is not None
+        if method in {'query_dns', 'getaddrinfo', 'gethostbyname'}:
+            assert resolver._timer is None
+            assert resolver._channel.wait(0)
+        else:
+            assert resolver._timer is not None
 
         await asyncio.sleep(native_deadline + 0.2)
         assert future.cancelled()

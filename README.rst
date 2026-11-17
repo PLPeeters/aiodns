@@ -11,6 +11,14 @@ Simple DNS resolver for asyncio
 aiodns provides a simple way for doing asynchronous DNS resolutions using `pycares <https://github.com/saghul/pycares>`_.
 
 
+This checkout requires the matching patched pycares and c-ares builds from this
+workspace. The required ``Channel.query_cancellable()`` and
+``Channel.getaddrinfo_cancellable()`` APIs are not available in released pycares
+packages. ``DNSResolver`` raises ``RuntimeError`` at construction if either API
+is missing. Package version requirements alone do not identify a compatible
+build yet.
+
+
 Example
 =======
 
@@ -55,6 +63,21 @@ The API is pretty simple, the following functions are provided in the ``DNSResol
 * ``close()``: Close the resolver. This releases all resources and cancels any pending queries. It must be called
   when the resolver is no longer needed (e.g., application shutdown). The resolver should only be closed from the
   event loop that created the resolver.
+
+
+Cancelling the Future returned by ``query_dns()``, ``gethostbyname()``, or
+``getaddrinfo()`` requests cancellation of that individual native operation,
+including its search attempts, retries, and address-family queries. Other
+operations on the resolver continue. The Future raises ``asyncio.CancelledError``
+immediately; its scheduled done callback requests native cancellation on a later
+event-loop turn. Completion can win that race, and any queued result is ignored
+if the Future was cancelled. The resolver stays alive until its native terminal
+callback has been handled.
+
+Cancellation cannot retract packets already sent. A partially written TCP frame
+may finish, and existing DNS response matching still applies if a wire ID is
+reused. The deprecated ``query()`` API and reverse lookups retain their existing
+Future cancellation behavior; ``DNSResolver.cancel()`` cancels all operations.
 
 
 Migrating from aiodns 3.x

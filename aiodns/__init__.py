@@ -87,6 +87,16 @@ class DNSResolver:
         timeout = kwargs.pop('timeout', None)
         self._timeout = timeout
         self._event_thread, self._channel = self._make_channel(**kwargs)
+        if not all(
+            callable(getattr(self._channel, name, None))
+            for name in ('query_cancellable', 'getaddrinfo_cancellable')
+        ):
+            self._channel.close()
+            raise RuntimeError(
+                'DNSResolver requires patched pycares with '
+                'query_cancellable() and getaddrinfo_cancellable(); '
+                'install the matching patched pycares/c-ares build.'
+            )
         if nameservers:
             self.nameservers = nameservers
         self._read_fds: set[int] = set()
@@ -253,6 +263,13 @@ class DNSResolver:
         finally:
             self._schedule_timer()
 
+    @staticmethod
+    def _cancel_operation(
+        operation: pycares.Operation, future: asyncio.Future[Any]
+    ) -> None:
+        if future.cancelled():
+            operation.cancel()
+
     @overload
     def query(
         self, host: str, qtype: Literal['A'], qclass: str | None = ...
@@ -347,11 +364,16 @@ class DNSResolver:
         fut, cb = self._get_future_callback()
         with self._capture_ares_error(fut):
             if qclass_int is not None:
-                self._channel.query(
+                operation = self._channel.query_cancellable(
                     host, qtype_int, query_class=qclass_int, callback=cb
                 )
             else:
-                self._channel.query(host, qtype_int, callback=cb)
+                operation = self._channel.query_cancellable(
+                    host, qtype_int, callback=cb
+                )
+            fut.add_done_callback(
+                functools.partial(self._cancel_operation, operation)
+            )
         return fut
 
     def _gethostbyname_callback(
@@ -406,7 +428,12 @@ class DNSResolver:
         else:
             cb = functools.partial(self._gethostbyname_callback, fut, host)
         with self._capture_ares_error(fut):
-            self._channel.getaddrinfo(host, None, family=family, callback=cb)
+            operation = self._channel.getaddrinfo_cancellable(
+                host, None, family=family, callback=cb
+            )
+            fut.add_done_callback(
+                functools.partial(self._cancel_operation, operation)
+            )
         return fut
 
     def getaddrinfo(
@@ -421,7 +448,7 @@ class DNSResolver:
         fut: asyncio.Future[pycares.AddrInfoResult]
         fut, cb = self._get_future_callback()
         with self._capture_ares_error(fut):
-            self._channel.getaddrinfo(
+            operation = self._channel.getaddrinfo_cancellable(
                 host,
                 port,
                 family=family,
@@ -429,6 +456,9 @@ class DNSResolver:
                 proto=proto,
                 flags=flags,
                 callback=cb,
+            )
+            fut.add_done_callback(
+                functools.partial(self._cancel_operation, operation)
             )
         return fut
 

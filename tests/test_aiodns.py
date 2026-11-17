@@ -1353,7 +1353,11 @@ async def test_wrapped_entry_points_route_sync_ares_error(
             aiodns.error.ARES_EBADNAME, 'Misformatted domain name'
         )
         with unittest.mock.patch.object(
-            resolver._channel, channel_method, side_effect=exc
+            resolver._channel,
+            'getaddrinfo_cancellable'
+            if channel_method == 'getaddrinfo'
+            else channel_method,
+            side_effect=exc,
         ):
             fut = _call_resolver_entry_point(resolver, channel_method)
         await _assert_malformed_name_routes_through_future(fut)
